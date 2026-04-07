@@ -31,7 +31,9 @@ PYTHON_VERSION="${PYTHON_VERSION:-3.11}"
 mkdir -p "${HOME}/.local/bin"
 
 cd "$ROOT"
-uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+  uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+fi
 export VIRTUAL_ENV="$VENV_DIR"
 uv pip install -e '.[messaging,cli,cron]' socksio
 
