@@ -255,6 +255,60 @@ async def test_discord_dms_ignore_mention_requirement(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_allowed_channels_blocks_other_channels(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "789")
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="ignored outside allowlist")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_allowed_channels_accepts_listed_channel(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "789,999")
+
+    message = make_message(channel=FakeTextChannel(channel_id=789), content="allowed in allowlist")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed in allowlist"
+
+
+@pytest.mark.asyncio
+async def test_discord_allowed_channels_accepts_thread_via_parent_channel(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "222")
+
+    parent = FakeTextChannel(channel_id=222, name="allowed-parent")
+    thread = FakeThread(channel_id=333, name="allowed-thread", parent=parent)
+    message = make_message(channel=thread, content="allowed through parent")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "allowed through parent"
+    assert event.source.chat_id == "333"
+
+
+@pytest.mark.asyncio
+async def test_discord_allowed_channels_blocks_dms_when_allowlist_set(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "789")
+
+    message = make_message(channel=FakeDMChannel(channel_id=654), content="dm outside allowlist")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_discord_auto_thread_enabled_by_default(adapter, monkeypatch):
     """Auto-threading should be enabled by default (DISCORD_AUTO_THREAD defaults to 'true')."""
     monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)

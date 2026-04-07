@@ -21,18 +21,21 @@ import time
 from collections import defaultdict
 from pathlib import Path
 from typing import Callable, Dict, Optional, Any
+from urllib.parse import urlparse, unquote
 
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
 
 try:
+    import aiohttp
     import discord
     from discord import Message as DiscordMessage, Intents
     from discord.ext import commands
     DISCORD_AVAILABLE = True
 except ImportError:
     DISCORD_AVAILABLE = False
+    aiohttp = None
     discord = None
     DiscordMessage = Any
     Intents = Any
@@ -77,6 +80,33 @@ def _clean_discord_id(entry: str) -> str:
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available."""
     return DISCORD_AVAILABLE
+
+
+def _discord_proxy_options_from_env() -> Dict[str, Any]:
+    """Return explicit discord.py proxy options from standard env vars.
+
+    discord.py/aiohttp do not consistently honor shell proxy environment
+    variables for Gateway WebSocket connections on all setups. Passing the
+    proxy explicitly keeps REST and Gateway behavior aligned.
+    """
+    proxy = (
+        os.getenv("HTTPS_PROXY")
+        or os.getenv("https_proxy")
+        or os.getenv("HTTP_PROXY")
+        or os.getenv("http_proxy")
+        or ""
+    ).strip()
+    if not proxy:
+        return {}
+
+    opts: Dict[str, Any] = {"proxy": proxy}
+    parsed = urlparse(proxy)
+    if parsed.username and aiohttp is not None:
+        opts["proxy_auth"] = aiohttp.BasicAuth(
+            unquote(parsed.username),
+            unquote(parsed.password or ""),
+        )
+    return opts
 
 
 class VoiceReceiver:
@@ -524,11 +554,15 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.guild_messages = True
             intents.members = any(not entry.isdigit() for entry in self._allowed_user_ids)
             intents.voice_states = True
+            proxy_opts = _discord_proxy_options_from_env()
+            if proxy_opts.get("proxy"):
+                logger.info("[%s] Using explicit Discord proxy %s", self.name, proxy_opts["proxy"])
 
             # Create bot
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                **proxy_opts,
             )
             adapter_self = self  # capture for closure
 
@@ -2063,6 +2097,22 @@ class DiscordAdapter(BasePlatformAdapter):
                 return True
         return False
 
+    def _is_allowed_channel(self, channel: Any) -> bool:
+        """Check DISCORD_ALLOWED_CHANNELS allowlist against channel or parent thread channel."""
+        raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
+        allowed = {item.strip() for item in raw.split(",") if item.strip()}
+        if not allowed:
+            return True
+
+        channel_ids = set()
+        channel_id = getattr(channel, "id", None)
+        if channel_id is not None:
+            channel_ids.add(str(channel_id))
+        parent_channel_id = self._get_parent_channel_id(channel)
+        if parent_channel_id:
+            channel_ids.add(parent_channel_id)
+        return bool(channel_ids & allowed)
+
     def _format_thread_chat_name(self, thread: Any) -> str:
         """Build a readable chat name for thread-like Discord channels, including forum context when available."""
         thread_name = getattr(thread, "name", None) or str(getattr(thread, "id", "thread"))
@@ -2124,6 +2174,9 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
+        if not self._is_allowed_channel(message.channel):
+            return
+
         # In server channels (not DMs), require the bot to be @mentioned
         # UNLESS the channel is in the free-response list or the message is
         # in a thread where the bot has already participated.
