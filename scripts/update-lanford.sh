@@ -42,7 +42,8 @@ if [[ -n "$(git status --porcelain)" ]]; then
   exit 1
 fi
 
-git fetch --prune "$UPSTREAM_REMOTE" "$ORIGIN_REMOTE"
+git fetch --prune "$UPSTREAM_REMOTE"
+git fetch --prune "$ORIGIN_REMOTE"
 git switch "$BRANCH"
 git rebase "$UPSTREAM_REMOTE/main"
 git submodule update --init --recursive
